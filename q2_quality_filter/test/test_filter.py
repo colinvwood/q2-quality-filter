@@ -1,21 +1,22 @@
 # ----------------------------------------------------------------------------
-# Copyright (c) 2016-2023, QIIME 2 development team.
+# Copyright (c) 2016-2024, QIIME 2 development team.
 #
 # Distributed under the terms of the Modified BSD License.
 #
 # The full license is in the file LICENSE, distributed with this software.
 # ----------------------------------------------------------------------------
 
-import unittest
+from copy import copy
 import gzip
 import os
+from pathlib import Path
+import tempfile
+import unittest
 
 import pandas as pd
 import pandas.testing as pdt
 import qiime2
 from qiime2.sdk import Artifact
-import numpy as np
-import numpy.testing as npt
 from qiime2.plugin.testing import TestPluginBase
 from qiime2.util import redirected_stdio
 from q2_types.per_sample_sequences import (
@@ -24,9 +25,11 @@ from q2_types.per_sample_sequences import (
 )
 
 from q2_quality_filter._filter import (
-    _read_fastq_seqs,
-    _runs_of_ones,
+    FastqRecord,
+    _read_fastq_records,
+    _find_low_quality_window,
     _truncate,
+    _write_record,
 )
 from q2_quality_filter._format import QualityFilterStatsFmt
 
@@ -34,55 +37,142 @@ from q2_quality_filter._format import QualityFilterStatsFmt
 class FilterTests(TestPluginBase):
     package = 'q2_quality_filter.test'
 
-    def test_read_fastq_seqs(self):
-        exp = [(b'@foo', b'ATGC', b'+', b'IIII', np.array([40, 40, 40, 40])),
-               (b'@bar', b'TGCA', b'+', b'ABCD', np.array([32, 33, 34, 35]))]
-        obs = list(_read_fastq_seqs(self.get_data_path('simple.fastq.gz'), 33))
+    def test_read_fastq_records(self):
+        exp = [
+            FastqRecord(b'@foo', b'ATGC', b'+', b'IIII'),
+            FastqRecord(b'@bar', b'TGCA', b'+', b'ABCD')
+        ]
+
+        obs = list(
+            _read_fastq_records(self.get_data_path('simple.fastq.gz'))
+        )
+
         self.assertEqual(len(obs), 2)
 
-        for o, e in zip(obs, exp):
-            self.assertEqual(o[:4], e[:4])
-            npt.assert_equal(o[4], e[4])
+        attrs = [
+            'sequence_header', 'sequence', 'quality_header', 'quality_scores'
+        ]
+        for exp_record, obs_record in zip(exp, obs):
+            for attr in attrs:
+                self.assertEqual(
+                    exp_record.__getattribute__(attr),
+                    obs_record.__getattribute__(attr)
+                )
 
-    def test_runs_of_ones(self):
-        data = [np.array([0, 0, 0, 0, 0, 0], dtype=bool),
-                np.array([1, 0, 1, 0, 1, 0], dtype=bool),
-                np.array([1, 1, 1, 1, 1, 1], dtype=bool),
-                np.array([0, 1, 1, 1, 0, 0], dtype=bool),
-                np.array([0, 0, 0, 0, 0, 1], dtype=bool)]
+    def test_find_low_quality_window(self):
+        # test no low quality window returns none
+        # 'M' has quality score of 44 with PHRED offset of 33
+        quality_scores = b'M' * 10
+        obs = _find_low_quality_window(
+            quality_scores, phred_offset=33, min_quality=20, window_length=2
+        )
+        self.assertEqual(obs, None)
 
-        exp_starts = [np.array([]), np.array([0, 2, 4]), np.array([0]),
-                      np.array([1]), np.array([5])]
-        exp_lengths = [np.array([]), np.array([1, 1, 1]), np.array([6]),
-                       np.array([3]), np.array([1])]
+        # test that `min_quality` bases are not considered part of a window
+        # (only scores that are lower)
+        obs = _find_low_quality_window(
+            quality_scores, phred_offset=33, min_quality=44, window_length=2
+        )
 
-        for i, d in enumerate(data):
-            o_starts, o_lengths = _runs_of_ones(d)
-            npt.assert_equal(o_starts, exp_starts[i])
-            npt.assert_equal(o_lengths, exp_lengths[i])
+        # test windows detected correctly
+        # quality scores: M => 44; + => 10
+        quality_scores = b'MMM++MM'
+        obs = _find_low_quality_window(
+            quality_scores, phred_offset=33, min_quality=15, window_length=2
+        )
+        self.assertEqual(obs, 3)
+
+        quality_scores = b'M++MM+++MM'
+        obs = _find_low_quality_window(
+            quality_scores, phred_offset=33, min_quality=15, window_length=3
+        )
+        self.assertEqual(obs, 5)
+
+        quality_scores = b'++MMMM'
+        obs = _find_low_quality_window(
+            quality_scores, phred_offset=33, min_quality=11, window_length=2
+        )
+        self.assertEqual(obs, 0)
+
+        quality_scores = b'M++MMMM+++'
+        obs = _find_low_quality_window(
+            quality_scores, phred_offset=33, min_quality=11, window_length=3
+        )
+        self.assertEqual(obs, 7)
+
+        # test when multiple windows exist, first window is returned
+        quality_scores = b'ML++MMM+++'
+        obs = _find_low_quality_window(
+            quality_scores, phred_offset=33, min_quality=20, window_length=2
+        )
+        self.assertEqual(obs, 2)
+
+        quality_scores = b'++ML+++M+++MM++'
+        obs = _find_low_quality_window(
+            quality_scores, phred_offset=33, min_quality=20, window_length=3
+        )
+        self.assertEqual(obs, 4)
 
     def test_truncate(self):
-        data = [('@x', 'ATGCG', '+', 'IIIIA', np.array([40, 40, 40, 40, 32])),
-                ('@y', 'TGCAC', '+', 'ABCDA', np.array([32, 33, 34, 35, 32]))]
+        fastq_record = FastqRecord(
+            b'@header', b'ATTCTGTA', b'+', b'MMLMLL++'
+        )
 
-        exp1 = [('@x', 'A', '+', 'I', np.array([40])),
-                ('@y', 'T', '+', 'A', np.array([32]))]
+        truncated = _truncate(copy(fastq_record), position=4)
+        exp = FastqRecord(
+            b'@header', b'ATTC', b'+', b'MMLM'
+        )
+        self.assertEqual(truncated, exp)
 
-        exp2 = [('@x', 'AT', '+', 'II', np.array([40, 40])),
-                ('@y', 'TG', '+', 'AB', np.array([32, 33]))]
+        truncated = _truncate(copy(fastq_record), position=7)
+        exp = FastqRecord(
+            b'@header', b'ATTCTGT', b'+', b'MMLMLL+'
+        )
+        self.assertEqual(truncated, exp)
 
-        for i, d in enumerate(data):
-            o1 = _truncate(d, 1)
-            o2 = _truncate(d, 2)
-            self.assertEqual(o1[:4], exp1[i][:4])
-            npt.assert_equal(o1[4], exp1[i][4])
-            self.assertEqual(o2[:4], exp2[i][:4])
-            npt.assert_equal(o2[4], exp2[i][4])
+        truncated = _truncate(copy(fastq_record), position=1)
+        exp = FastqRecord(
+            b'@header', b'A', b'+', b'M'
+        )
+        self.assertEqual(truncated, exp)
+
+        truncated = _truncate(copy(fastq_record), position=0)
+        exp = FastqRecord(
+            b'@header', b'', b'+', b''
+        )
+        self.assertEqual(truncated, exp)
+
+    def test_write_record(self):
+        fastq_record = FastqRecord(
+            b'@header', b'ATTCTGTA', b'+', b'MMLMLL++'
+        )
+
+        with tempfile.TemporaryDirectory() as tempdir:
+            fp = Path(tempdir) / 'file.fastq.gz'
+
+            with gzip.open(fp, 'wb') as fh:
+                _write_record(fastq_record, fh)
+
+            with gzip.open(fp, 'rb') as fh:
+                contents = fh.read()
+                exp = b'@header\nATTCTGTA\n+\nMMLMLL++\n'
+                self.assertEqual(contents, exp)
+
+            with gzip.open(fp, 'ab') as fh:
+                _write_record(fastq_record, fh)
+                _write_record(fastq_record, fh)
+
+            with gzip.open(fp, 'rb') as fh:
+                contents = fh.read()
+                exp = b'@header\nATTCTGTA\n+\nMMLMLL++\n' * 3
+                self.assertEqual(contents, exp)
 
     def test_q_score_all_dropped(self):
         ar = Artifact.load(self.get_data_path('simple.qza'))
 
-        with self.assertRaisesRegex(ValueError, "filtered out"):
+        with self.assertRaisesRegex(
+            ValueError, 'All sequences from all samples were filtered'
+        ):
             with redirected_stdio(stdout=os.devnull):
                 self.plugin.methods['q_score'](ar, min_quality=50)
 
@@ -92,7 +182,7 @@ class FilterTests(TestPluginBase):
 
         with redirected_stdio(stdout=os.devnull):
             obs_ar, stats_ar = self.plugin.methods['q_score'](
-                ar, min_quality=20)
+                ar, min_quality=2)
         obs = obs_ar.view(SingleLanePerSampleSingleEndFastqDirFmt)
         stats = stats_ar.view(pd.DataFrame)
         obs_manifest = obs.manifest.view(obs.manifest.format)
@@ -157,6 +247,8 @@ class FilterTests(TestPluginBase):
         pdt.assert_frame_equal(stats, exp_trunc_stats.loc[stats.index])
 
     def test_q_score_real(self):
+        self.maxDiff = None
+
         ar = Artifact.load(self.get_data_path('real_data.qza'))
         with redirected_stdio(stdout=os.devnull):
             obs_ar, stats_ar = self.plugin.methods['q_score'](

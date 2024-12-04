@@ -9,7 +9,6 @@
 from dataclasses import dataclass
 import gzip
 import os
-from typing import BinaryIO
 import yaml
 import pandas as pd
 
@@ -135,7 +134,7 @@ def _truncate(fastq_record: FastqRecord, position: int) -> FastqRecord:
     return fastq_record
 
 
-def _write_record(fastq_record: FastqRecord, fh: BinaryIO) -> None:
+def _write_record(fastq_record: FastqRecord, fh: gzip.GzipFile) -> None:
     '''
     Writes a fastq record to an open fastq file.
 
@@ -143,7 +142,7 @@ def _write_record(fastq_record: FastqRecord, fh: BinaryIO) -> None:
     ----------
     fastq_record : FastqRecord
         The fastq record to be written.
-    fh : BinaryIO
+    fh : GzipFile
         The output fastq file handler.
 
     Returns
@@ -156,33 +155,33 @@ def _write_record(fastq_record: FastqRecord, fh: BinaryIO) -> None:
     fh.write(fastq_record.quality_scores + b'\n')
 
 
-# defaults as used Bokulich et al, Nature Methods 2013,
-# same as QIIME 1.9.1
-_default_params = {
-    'min_quality': 4,
-    'quality_window': 3,
-    'min_length_fraction': 0.75,
-    'max_ambiguous': 0
-}
-
-
 def q_score(
     demux: SingleLanePerSampleSingleEndFastqDirFmt,
-    min_quality: int = _default_params['min_quality'],
-    quality_window: int = _default_params['quality_window'],
-    min_length_fraction: float = _default_params['min_length_fraction'],
-    max_ambiguous: int = _default_params['max_ambiguous']
+    min_quality: int = 4,
+    quality_window: int = 3,
+    min_length_fraction: float = 0.75,
+    max_ambiguous: int = 0
 ) -> (SingleLanePerSampleSingleEndFastqDirFmt, pd.DataFrame):
+    '''
+    Parameter defaults as used in Bokulich et al, Nature Methods 2013, same as
+    QIIME 1.9.1.
 
+    Parameters
+    ----------
+
+    Returns
+    -------
+    tuple[SingleLanePerSampleSingleEndFastqDirFmt, pd.DataFrame]
+
+    '''
+
+    # TODO: paired/single handling
     # create the output format and its manifest format
     result = SingleLanePerSampleSingleEndFastqDirFmt()
 
     manifest = FastqManifestFormat()
     manifest_fh = manifest.open()
     manifest_fh.write('sample-id,filename,direction\n')
-    manifest_fh.write('# direction is not meaningful in this file as these\n')
-    manifest_fh.write('# data may be derived from forward, reverse, or \n')
-    manifest_fh.write('# joined reads\n')
 
     # load the input demux manifest
     metadata_view = demux.metadata.view(YamlFormat).open()
@@ -191,6 +190,12 @@ def q_score(
     demux_manifest = demux.manifest.view(demux.manifest.format)
     demux_manifest = pd.read_csv(demux_manifest.open(), dtype=str)
     demux_manifest.set_index('filename', inplace=True)
+
+    # HACK: we have to deal with comment lines that may be present in the
+    # manifest that used to be written by this method
+    demux_manifest = demux_manifest[
+        ~demux_manifest['sample-id'].str.startswith('#')
+    ]
 
     filtering_stats_df = pd.DataFrame(
         data=0,
@@ -224,7 +229,7 @@ def q_score(
                 fastq_record.quality_scores,
                 phred_offset,
                 min_quality,
-                quality_window
+                quality_window + 1
             )
 
             # truncate fastq record if necessary and discard if it has been
@@ -235,7 +240,7 @@ def q_score(
                 filtering_stats_df.loc[sample_id, 'reads-truncated'] += 1
 
                 trunc_fraction = truncation_position / initial_record_length
-                if trunc_fraction < min_length_fraction:
+                if trunc_fraction <= min_length_fraction:
                     filtering_stats_df.loc[
                         sample_id, 'reads-too-short-after-truncation'
                     ] += 1
@@ -278,5 +283,4 @@ def q_score(
     metadata.path.write_text(yaml.dump({'phred-offset': phred_offset}))
     result.metadata.write_data(metadata, YamlFormat)
 
-    print('stats df', filtering_stats_df)
     return result, filtering_stats_df
