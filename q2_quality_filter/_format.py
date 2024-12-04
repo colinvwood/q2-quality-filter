@@ -35,9 +35,8 @@ QualityFilterStatsDirFmt = model.SingleFileDirectoryFormat(
 _ReadDirectionTypes = Union[
         SingleLanePerSampleSingleEndFastqDirFmt,
         SingleLanePerSamplePairedEndFastqDirFmt,
-        None
 ]
 
 
 class _ReadDirectionUnion:
-    format: _ReadDirectionTypes = None
+    format: _ReadDirectionTypes

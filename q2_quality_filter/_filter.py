@@ -10,9 +10,10 @@ from dataclasses import dataclass
 import gzip
 import os
 from typing import Union
+from pathlib import Path
+
 import yaml
 import pandas as pd
-
 import numpy as np
 
 from q2_types.per_sample_sequences import (
@@ -177,13 +178,12 @@ def q_score(
     Parameter defaults as used in Bokulich et al, Nature Methods 2013, same as
     QIIME 1.9.1.
     '''
-
     # we need to use a union type of single-end and paired-end formats
     # which will be transformed by the framework to the appropriate return type
-    output_format = _ReadDirectionUnion()
-    output_format.format = type(demux)()
+    union_format = _ReadDirectionUnion()
+    union_format.format = type(demux)()
 
-    result = output_format.format
+    result = union_format.format
 
     manifest = FastqManifestFormat()
     manifest_fh = manifest.open()
@@ -194,12 +194,14 @@ def q_score(
     phred_offset = yaml.load(metadata_view,
                              Loader=yaml.SafeLoader)['phred-offset']
     demux_manifest = demux.manifest.view(demux.manifest.format)
-    demux_manifest = pd.read_csv(demux_manifest.open(), dtype=str, comment='#')
-    demux_manifest.set_index('filename', inplace=True)
+    demux_manifest_df = pd.read_csv(
+        demux_manifest.open(), dtype=str, comment='#'
+    )
+    demux_manifest_df.set_index('filename', inplace=True)
 
     filtering_stats_df = pd.DataFrame(
         data=0,
-        index=demux_manifest['sample-id'],
+        index=demux_manifest_df['sample-id'],
         columns=[
             'total-input-reads', 'total-retained-reads', 'reads-truncated',
             'reads-too-short-after-truncation',
@@ -207,20 +209,33 @@ def q_score(
         ]
     )
 
-    iterator = demux.sequences.iter_views(FastqGzFormat)
-    for barcode_id, (filename, filepath) in enumerate(iterator):
-        sample_id = demux_manifest.loc[str(filename)]['sample-id']
+    for barcode_id, filename in enumerate(demux_manifest_df.index.values):
+        # determine read number
+        if 'R1' in str(filename):
+            read_number = 1
+        elif 'R2' in str(filename):
+            read_number = 2
+        else:
+            msg = (
+                'Unrecognized fastq file name. Netiher "R1" nor "R2" '
+                f'were found in the file {filename}.'
+            )
+            raise ValueError(msg)
 
-        # barcode ID, lane number and read number are not relevant here
+        # look up sample id
+        sample_id = demux_manifest_df.loc[str(filename)]['sample-id']
+
+        # create path for output fastq file
         path = result.sequences.path_maker(
             sample_id=sample_id,
             barcode_id=barcode_id,
             lane_number=1,
-            read_number=1
+            read_number=read_number
         )
 
         output_fh = gzip.open(path, mode='wb')
 
+        filepath = Path(demux.path) / filename
         for fastq_record in _read_fastq_records(str(filepath)):
             filtering_stats_df.loc[sample_id, 'total-input-reads'] += 1
 
@@ -261,9 +276,10 @@ def q_score(
         # otherwise delete the empty file
         output_fh.close()
         if filtering_stats_df.loc[sample_id, 'total-retained-reads'] > 0:
-            # TODO
-            direction = 'forward'
-            manifest_fh.write(f'{sample_id},{path.name},{direction}\n')
+            if read_number == 1:
+                manifest_fh.write(f'{sample_id},{path.name},forward\n')
+            elif read_number == 2:
+                manifest_fh.write(f'{sample_id},{path.name},reverse\n')
         else:
             os.remove(path)
 
@@ -283,4 +299,4 @@ def q_score(
     metadata.path.write_text(yaml.dump({'phred-offset': phred_offset}))
     result.metadata.write_data(metadata, YamlFormat)
 
-    return output_format, filtering_stats_df
+    return union_format, filtering_stats_df
