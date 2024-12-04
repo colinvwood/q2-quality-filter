@@ -10,7 +10,12 @@ import pandas as pd
 import qiime2
 
 from .plugin_setup import plugin
-from ._format import QualityFilterStatsFmt
+from ._format import QualityFilterStatsFmt, _ReadDirectionUnion
+
+from q2_types.per_sample_sequences import (
+    SingleLanePerSampleSingleEndFastqDirFmt,
+    SingleLanePerSamplePairedEndFastqDirFmt,
+)
 
 
 @plugin.register_transformer
@@ -45,3 +50,13 @@ def _2(ff: QualityFilterStatsFmt) -> pd.DataFrame:
 @plugin.register_transformer
 def _3(ff: QualityFilterStatsFmt) -> qiime2.Metadata:
     return qiime2.Metadata(_stats_to_df(ff))
+
+
+@plugin.register_transformer
+def _4(ff: _ReadDirectionUnion) -> SingleLanePerSampleSingleEndFastqDirFmt:
+    return ff.format
+
+
+@plugin.register_transformer
+def _5(ff: _ReadDirectionUnion) -> SingleLanePerSamplePairedEndFastqDirFmt:
+    return ff.format

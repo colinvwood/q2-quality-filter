@@ -9,13 +9,21 @@
 from dataclasses import dataclass
 import gzip
 import os
+from typing import Union
 import yaml
 import pandas as pd
 
 import numpy as np
+
 from q2_types.per_sample_sequences import (
-            SingleLanePerSampleSingleEndFastqDirFmt,
-            FastqManifestFormat, YamlFormat, FastqGzFormat)
+    SingleLanePerSampleSingleEndFastqDirFmt,
+    SingleLanePerSamplePairedEndFastqDirFmt,
+    FastqManifestFormat,
+    YamlFormat,
+    FastqGzFormat,
+)
+
+from q2_quality_filter._format import _ReadDirectionUnion
 
 
 @dataclass
@@ -156,28 +164,26 @@ def _write_record(fastq_record: FastqRecord, fh: gzip.GzipFile) -> None:
 
 
 def q_score(
-    demux: SingleLanePerSampleSingleEndFastqDirFmt,
+    demux: Union[
+        SingleLanePerSampleSingleEndFastqDirFmt,
+        SingleLanePerSamplePairedEndFastqDirFmt
+    ],
     min_quality: int = 4,
     quality_window: int = 3,
     min_length_fraction: float = 0.75,
     max_ambiguous: int = 0
-) -> (SingleLanePerSampleSingleEndFastqDirFmt, pd.DataFrame):
+) -> (_ReadDirectionUnion, pd.DataFrame):
     '''
     Parameter defaults as used in Bokulich et al, Nature Methods 2013, same as
     QIIME 1.9.1.
-
-    Parameters
-    ----------
-
-    Returns
-    -------
-    tuple[SingleLanePerSampleSingleEndFastqDirFmt, pd.DataFrame]
-
     '''
 
-    # TODO: paired/single handling
-    # create the output format and its manifest format
-    result = SingleLanePerSampleSingleEndFastqDirFmt()
+    # we need to use a union type of single-end and paired-end formats
+    # which will be transformed by the framework to the appropriate return type
+    output_format = _ReadDirectionUnion()
+    output_format.format = type(demux)()
+
+    result = output_format.format
 
     manifest = FastqManifestFormat()
     manifest_fh = manifest.open()
@@ -188,14 +194,8 @@ def q_score(
     phred_offset = yaml.load(metadata_view,
                              Loader=yaml.SafeLoader)['phred-offset']
     demux_manifest = demux.manifest.view(demux.manifest.format)
-    demux_manifest = pd.read_csv(demux_manifest.open(), dtype=str)
+    demux_manifest = pd.read_csv(demux_manifest.open(), dtype=str, comment='#')
     demux_manifest.set_index('filename', inplace=True)
-
-    # HACK: we have to deal with comment lines that may be present in the
-    # manifest that used to be written by this method
-    demux_manifest = demux_manifest[
-        ~demux_manifest['sample-id'].str.startswith('#')
-    ]
 
     filtering_stats_df = pd.DataFrame(
         data=0,
@@ -283,4 +283,4 @@ def q_score(
     metadata.path.write_text(yaml.dump({'phred-offset': phred_offset}))
     result.metadata.write_data(metadata, YamlFormat)
 
-    return result, filtering_stats_df
+    return output_format, filtering_stats_df

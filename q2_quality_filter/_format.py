@@ -6,7 +6,14 @@
 # The full license is in the file LICENSE, distributed with this software.
 # ----------------------------------------------------------------------------
 
+from typing import Union
+
 import qiime2.plugin.model as model
+
+from q2_types.per_sample_sequences import (
+    SingleLanePerSampleSingleEndFastqDirFmt,
+    SingleLanePerSamplePairedEndFastqDirFmt,
+)
 
 
 class QualityFilterStatsFmt(model.TextFileFormat):
@@ -23,3 +30,14 @@ class QualityFilterStatsFmt(model.TextFileFormat):
 
 QualityFilterStatsDirFmt = model.SingleFileDirectoryFormat(
     'QualityFilterStatsDirFmt', 'stats.csv', QualityFilterStatsFmt)
+
+
+_ReadDirectionTypes = Union[
+        SingleLanePerSampleSingleEndFastqDirFmt,
+        SingleLanePerSamplePairedEndFastqDirFmt,
+        None
+]
+
+
+class _ReadDirectionUnion:
+    format: _ReadDirectionTypes = None
