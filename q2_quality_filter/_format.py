@@ -10,7 +10,7 @@ import qiime2.plugin.model as model
 
 
 class QualityFilterStatsFmt(model.TextFileFormat):
-    def sniff(self):
+    def _validate_(self, level):
         line = open(str(self)).readline()
         hdr = line.strip().split(',')
         expected = ['sample-id', 'total-input-reads',

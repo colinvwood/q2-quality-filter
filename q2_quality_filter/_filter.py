@@ -6,8 +6,10 @@
 # The full license is in the file LICENSE, distributed with this software.
 # ----------------------------------------------------------------------------
 
-import itertools
+from dataclasses import dataclass
 import gzip
+import os
+from typing import BinaryIO
 import yaml
 import pandas as pd
 
@@ -17,39 +19,141 @@ from q2_types.per_sample_sequences import (
             FastqManifestFormat, YamlFormat, FastqGzFormat)
 
 
-def _read_fastq_seqs(filepath, phred_offset):
-    # This function is adapted from @jairideout's SO post:
-    # http://stackoverflow.com/a/39302117/3424666
+@dataclass
+class FastqRecord:
+    sequence_header: bytes
+    sequence: bytes
+    quality_header: bytes
+    quality_scores: bytes
+
+
+def _read_fastq_records(filepath: str):
+    '''
+    A generator for a fastq file that yields sequence records. The fastq file
+    is assumed to be gzipped.
+
+    Parameters
+    ----------
+    filepath : str
+        The filepath to the fastq.gz file.
+
+    Yields
+    ------
+    SequenceRecord
+        A sequence record representing a record from the fastq file.
+    '''
     fh = gzip.open(filepath, 'rb')
-    for seq_header, seq, qual_header, qual in itertools.zip_longest(*[fh] * 4):
-        qual = qual.strip()
-        qual_parsed = np.frombuffer(memoryview(qual), dtype=np.uint8)
-        qual_parsed = qual_parsed - phred_offset
-        yield (seq_header.strip(), seq.strip(), qual_header.strip(),
-               qual, qual_parsed)
+    while True:
+        try:
+            sequence_header = next(fh)
+            sequence = next(fh)
+            quality_header = next(fh)
+            quality_scores = next(fh)
+        except StopIteration:
+            fh.close()
+            break
+
+        yield FastqRecord(
+            sequence_header.strip(),
+            sequence.strip(),
+            quality_header.strip(),
+            quality_scores.strip()
+        )
 
 
-def _runs_of_ones(arr):
-    """Find the location and length of runs
+def _find_low_quality_window(
+    quality_scores: bytes,
+    phred_offset: int,
+    min_quality: int,
+    window_length: int
+) -> int | None:
+    '''
+    Searches a sequence of quality scores for subsequences (windows) of length
+    `window_length` that consist of quality scores each less than
+    `min_quality`. If one or more such windows exist then the index of the
+    first position of the first such window is returned (which will be the
+    truncation position). Otherwise None is returned.
 
-    This method assumes the input array is boolean
-    """
-    # http://stackoverflow.com/a/1066838
-    # make sure all runs of ones are well-bounded
-    bounded = np.hstack(([0], arr, [0]))
-    # get 1 at run starts and -1 at run ends
-    difs = np.diff(bounded)
-    run_starts, = np.where(difs > 0)
-    run_ends, = np.where(difs < 0)
-    return run_starts, run_ends - run_starts
+    Parameters
+    ----------
+    quality_scores : bytes
+        The quality scores byte string for a fastq record.
+    phred_offset : int
+        The PHRED offset encoding of the quality scores.
+    min_quality : int
+        The minimum quality that a base must have in order to not be considered
+        part of a low quality window.
+    window_length : int
+        The length of the low quality window to search for.
+
+    Returns
+    -------
+    int or None
+        The index of the first position of the first low quality window found
+        or None if no such window is found.
+
+    '''
+    # parse and adjust quality scores
+    quality_scores_parsed = np.frombuffer(
+        quality_scores, np.uint8
+    )
+    quality_scores_adjusted = quality_scores_parsed - phred_offset
+    less_than_min_quality = quality_scores_adjusted < min_quality
+
+    # use a convolution to detect bad quality windows
+    window = np.ones(window_length, dtype=int)
+    convolution = np.convolve(less_than_min_quality, window, mode='valid')
+    window_indices = np.where(convolution == window_length)[0]
+
+    if len(window_indices) == 0:
+        return None
+
+    return window_indices[0]
 
 
-def _truncate(sequence_record, position):
-    """Truncate a record up to a specified position"""
-    seq = sequence_record[1][:position]
-    qual = sequence_record[3][:position]
-    qual_parsed = sequence_record[4][:position]
-    return (sequence_record[0], seq, sequence_record[2], qual, qual_parsed)
+def _truncate(fastq_record: FastqRecord, position: int) -> FastqRecord:
+    '''
+    Truncates a fastq record's sequence and quality scores to a specified
+    `position`. Note that `position` is the first position that is excluded
+    from the resulting record.
+
+    Parameters
+    ----------
+    fastq_record : FastqRecord
+        The fastq record to truncate
+    position : int
+        The truncation position
+
+    Returns
+    -------
+    FastqRecord
+        The truncated fastq record.
+    '''
+    fastq_record.sequence = fastq_record.sequence[:position]
+    fastq_record.quality_scores = fastq_record.quality_scores[:position]
+
+    return fastq_record
+
+
+def _write_record(fastq_record: FastqRecord, fh: BinaryIO) -> None:
+    '''
+    Writes a fastq record to an open fastq file.
+
+    Parameters
+    ----------
+    fastq_record : FastqRecord
+        The fastq record to be written.
+    fh : BinaryIO
+        The output fastq file handler.
+
+    Returns
+    -------
+    None
+    '''
+    fh.write(fastq_record.sequence_header + b'\n')
+    fh.write(fastq_record.sequence + b'\n')
+    fh.write(fastq_record.quality_header + b'\n')
+    fh.write(fastq_record.quality_scores + b'\n')
 
 
 # defaults as used Bokulich et al, Nature Methods 2013,
@@ -62,15 +166,15 @@ _default_params = {
 }
 
 
-# TODO: fix up demux fmt writing a la q2-cutadapt
-def q_score(demux: SingleLanePerSampleSingleEndFastqDirFmt,
-            min_quality: int = _default_params['min_quality'],
-            quality_window: int = _default_params['quality_window'],
-            min_length_fraction:
-            float = _default_params['min_length_fraction'],
-            max_ambiguous: int = _default_params['max_ambiguous']) \
-                  -> (SingleLanePerSampleSingleEndFastqDirFmt,
-                      pd.DataFrame):
+def q_score(
+    demux: SingleLanePerSampleSingleEndFastqDirFmt,
+    min_quality: int = _default_params['min_quality'],
+    quality_window: int = _default_params['quality_window'],
+    min_length_fraction: float = _default_params['min_length_fraction'],
+    max_ambiguous: int = _default_params['max_ambiguous']
+) -> (SingleLanePerSampleSingleEndFastqDirFmt, pd.DataFrame):
+
+    # create the output format and its manifest format
     result = SingleLanePerSampleSingleEndFastqDirFmt()
 
     manifest = FastqManifestFormat()
@@ -80,12 +184,7 @@ def q_score(demux: SingleLanePerSampleSingleEndFastqDirFmt,
     manifest_fh.write('# data may be derived from forward, reverse, or \n')
     manifest_fh.write('# joined reads\n')
 
-    log_records_truncated_counts = {}
-    log_records_max_ambig_counts = {}
-    log_records_tooshort_counts = {}
-    log_records_totalread_counts = {}
-    log_records_totalkept_counts = {}
-
+    # load the input demux manifest
     metadata_view = demux.metadata.view(YamlFormat).open()
     phred_offset = yaml.load(metadata_view,
                              Loader=yaml.SafeLoader)['phred-offset']
@@ -93,75 +192,85 @@ def q_score(demux: SingleLanePerSampleSingleEndFastqDirFmt,
     demux_manifest = pd.read_csv(demux_manifest.open(), dtype=str)
     demux_manifest.set_index('filename', inplace=True)
 
+    filtering_stats_df = pd.DataFrame(
+        data=0,
+        index=demux_manifest['sample-id'],
+        columns=[
+            'total-input-reads', 'total-retained-reads', 'reads-truncated',
+            'reads-too-short-after-truncation',
+            'reads-exceeding-maximum-ambiguous-bases'
+        ]
+    )
+
     iterator = demux.sequences.iter_views(FastqGzFormat)
-    for bc_id, (fname, fp) in enumerate(iterator):
-        sample_id = demux_manifest.loc[str(fname)]['sample-id']
+    for barcode_id, (filename, filepath) in enumerate(iterator):
+        sample_id = demux_manifest.loc[str(filename)]['sample-id']
 
-        log_records_truncated_counts[sample_id] = 0
-        log_records_max_ambig_counts[sample_id] = 0
-        log_records_tooshort_counts[sample_id] = 0
-        log_records_totalread_counts[sample_id] = 0
-        log_records_totalkept_counts[sample_id] = 0
+        # barcode ID, lane number and read number are not relevant here
+        path = result.sequences.path_maker(
+            sample_id=sample_id,
+            barcode_id=barcode_id,
+            lane_number=1,
+            read_number=1
+        )
 
-        # per q2-demux, barcode ID, lane number and read number are not
-        # relevant here
-        path = result.sequences.path_maker(sample_id=sample_id,
-                                           barcode_id=bc_id,
-                                           lane_number=1,
-                                           read_number=1)
+        output_fh = gzip.open(path, mode='wb')
 
-        # we do not open a writer by default in the event that all sequences
-        # for a sample are filtered out; an empty fastq file is not a valid
-        # fastq file.
-        writer = None
-        for sequence_record in _read_fastq_seqs(str(fp), phred_offset):
-            log_records_totalread_counts[sample_id] += 1
+        for fastq_record in _read_fastq_records(str(filepath)):
+            filtering_stats_df.loc[sample_id, 'total-input-reads'] += 1
 
-            # determine the length of the runs below quality threshold
-            # NOTE: QIIME 1.x used <= the quality threshold and the parameter
-            #   -q was interpreted as the maximum unacceptable PHRED score. In
-            #   QIIME 2.x, we're now interpreting this as the minimum
-            #   acceptable score.
-            qual_below_threshold = sequence_record[4] < min_quality
-            run_starts, run_lengths = _runs_of_ones(qual_below_threshold)
-            bad_windows = np.argwhere(run_lengths > quality_window)
+            # search for low quality window
+            truncation_position = _find_low_quality_window(
+                fastq_record.quality_scores,
+                phred_offset,
+                min_quality,
+                quality_window
+            )
 
-            # if there is a run of sufficient size, truncate it
-            if bad_windows.size > 0:
-                log_records_truncated_counts[sample_id] += 1
+            # truncate fastq record if necessary and discard if it has been
+            # made too short
+            initial_record_length = len(fastq_record.sequence)
+            if truncation_position is not None:
+                fastq_record = _truncate(fastq_record, truncation_position)
+                filtering_stats_df.loc[sample_id, 'reads-truncated'] += 1
 
-                full_length = len(sequence_record[1])
-                sequence_record = _truncate(sequence_record,
-                                            run_starts[bad_windows[0]][0])
-                trunc_length = len(sequence_record[1])
-
-                # do not keep the read if it is too short following truncation
-                if round(trunc_length / full_length, 3) <= min_length_fraction:
-                    log_records_tooshort_counts[sample_id] += 1
+                trunc_fraction = truncation_position / initial_record_length
+                if trunc_fraction < min_length_fraction:
+                    filtering_stats_df.loc[
+                        sample_id, 'reads-too-short-after-truncation'
+                    ] += 1
                     continue
 
-            # do not keep the read if there are too many ambiguous bases
-            if sequence_record[1].count(b'N') > max_ambiguous:
-                log_records_max_ambig_counts[sample_id] += 1
+            # discard record if there are too many ambiguous bases
+            if fastq_record.sequence.count(b'N') > max_ambiguous:
+                filtering_stats_df.loc[
+                    sample_id, 'reads-exceeding-maximum-ambiguous-bases'
+                ] += 1
                 continue
 
-            fastq_lines = b'\n'.join(sequence_record[:4]) + b'\n'
+            # write record to output file
+            _write_record(fastq_record, output_fh)
+            filtering_stats_df.loc[sample_id, 'total-retained-reads'] += 1
 
-            if writer is None:
-                writer = gzip.open(str(path), mode='w')
-            writer.write(fastq_lines)
+        # close output file and update manifest if records were retained,
+        # otherwise delete the empty file
+        output_fh.close()
+        if filtering_stats_df.loc[sample_id, 'total-retained-reads'] > 0:
+            # TODO
+            direction = 'forward'
+            manifest_fh.write(f'{sample_id},{path.name},{direction}\n')
+        else:
+            os.remove(path)
 
-            log_records_totalkept_counts[sample_id] += 1
+    # error if all samples retained no reads
+    if filtering_stats_df['total-retained-reads'].sum() == 0:
+        msg = (
+            'All sequences from all samples were filtered. The parameter '
+            'choices may have been too stringent for the data.'
+        )
+        raise ValueError(msg)
 
-        if writer is not None:
-            manifest_fh.write('%s,%s,%s\n' % (sample_id, path.name, 'forward'))
-            writer.close()
-
-    if set(log_records_totalkept_counts.values()) == {0, }:
-        raise ValueError("All sequences from all samples were filtered out. "
-                         "The parameter choices may be too stringent for the "
-                         "data.")
-
+    # write output manifest and metadata files to format
     manifest_fh.close()
     result.manifest.write_data(manifest, FastqManifestFormat)
 
@@ -169,18 +278,5 @@ def q_score(demux: SingleLanePerSampleSingleEndFastqDirFmt,
     metadata.path.write_text(yaml.dump({'phred-offset': phred_offset}))
     result.metadata.write_data(metadata, YamlFormat)
 
-    columns = ['sample-id', 'total-input-reads', 'total-retained-reads',
-               'reads-truncated',
-               'reads-too-short-after-truncation',
-               'reads-exceeding-maximum-ambiguous-bases']
-    stats = []
-    for id_, _ in sorted(log_records_truncated_counts.items()):
-        stats.append([id_, log_records_totalread_counts[id_],
-                      log_records_totalkept_counts[id_],
-                      log_records_truncated_counts[id_],
-                      log_records_tooshort_counts[id_],
-                      log_records_max_ambig_counts[id_]])
-
-    stats = pd.DataFrame(stats, columns=columns).set_index('sample-id')
-
-    return result, stats
+    print('stats df', filtering_stats_df)
+    return result, filtering_stats_df
