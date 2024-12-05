@@ -7,6 +7,7 @@
 # ----------------------------------------------------------------------------
 
 from dataclasses import dataclass
+from enum import Enum
 import gzip
 import os
 from typing import Union
@@ -21,7 +22,6 @@ from q2_types.per_sample_sequences import (
     SingleLanePerSamplePairedEndFastqDirFmt,
     FastqManifestFormat,
     YamlFormat,
-    FastqGzFormat,
 )
 
 from q2_quality_filter._format import _ReadDirectionUnion
@@ -143,6 +143,177 @@ def _truncate(fastq_record: FastqRecord, position: int) -> FastqRecord:
     return fastq_record
 
 
+class RecordStatus(Enum):
+    UNTRUNCATED = 1
+    TRUNCATED = 2
+    SHORT = 3
+    AMBIGUOUS = 4
+    TRUNCATED_AMBIGUOUS = 5
+
+
+def _process_record(
+    fastq_record: FastqRecord,
+    phred_offset: int,
+    min_quality: int,
+    window_length: int,
+    min_length_fraction: float,
+    max_ambiguous: int,
+) -> tuple[FastqRecord, RecordStatus]:
+    '''
+    Processes a fastq record by detecting low quality windows, truncating if
+    one or more such windows are found, detecting if a truncated record is too
+    short, and finally detecting if the number of ambiguous bases is too high.
+
+    Parameters
+    ----------
+    fastq_record : FastqRecord | None
+        The fastq record to be processed. None if record does not exist (for
+        convenience when reverse reads are not present).
+    phred_offset : int
+        The PHRED encoding of the record's quality scores.
+    min_quality : int
+        The minimum quality that a base must have in order to not be considered
+        part of a low quality window.
+    window_length : int
+        The length of the low quality window to search for.
+    min_length_fraction : float
+        The fraction of its original length a record must be greater than to
+        be retained.
+    max_ambiguous : int
+        The maximum number of ambiguous bases a record may contain to be
+        retained.
+
+    Returns
+    -------
+    tuple[FastqRecord, RecordStatus]
+        A tuple containing the processed record and its status.
+    '''
+    if fastq_record is None:
+        return None, None
+
+    status = RecordStatus.UNTRUNCATED
+
+    # search for low quality window
+    truncation_position = _find_low_quality_window(
+        fastq_record.quality_scores,
+        phred_offset,
+        min_quality,
+        window_length
+    )
+
+    # check if truncation should be performed mark short if necessary
+    initial_record_length = len(fastq_record.sequence)
+    if truncation_position is not None:
+        fastq_record = _truncate(fastq_record, truncation_position)
+        status = RecordStatus.TRUNCATED
+
+        trunc_fraction = truncation_position / initial_record_length
+        if trunc_fraction <= min_length_fraction:
+            status = RecordStatus.SHORT
+
+            return fastq_record, status
+
+    # mark ambiguous if too many ambiguous bases are present
+    if fastq_record.sequence.count(b'N') > max_ambiguous:
+        if status == RecordStatus.TRUNCATED:
+            status = RecordStatus.TRUNCATED_AMBIGUOUS
+        else:
+            status = RecordStatus.AMBIGUOUS
+
+    return fastq_record, status
+
+
+def _is_retained(
+    forward_status: RecordStatus,
+    reverse_status: RecordStatus | None,
+    filtering_stats_df: pd.DataFrame,
+    sample_id: str
+) -> bool:
+    '''
+    Determines whether a fastq record or pair of fastq records will retained
+    in the output. The `reverse_status` is None in the case of single-end
+    reads.
+
+    Parameters
+    ----------
+    forward_status : RecordStatus
+        The status of the record from the forward fastq file.
+    reverse_status : RecordStatus or None
+        The status of the record from the reverse fastq file if it exists
+        otherwise None.
+    filtering_stats_df : pd.DataFrame
+        The data structure that tracks filtering stats.
+    sample_id : str
+        The sample id that the record(s) belongs to.
+
+    Returns
+    -------
+    bool
+        True if the record(s) is to be retained, False otherwise.
+    '''
+    filtering_stats_df.loc[sample_id, 'total-input-reads'] += 1
+
+    if (RecordStatus.SHORT in (forward_status, reverse_status)):
+        filtering_stats_df.loc[sample_id, 'reads-truncated'] += 1
+        filtering_stats_df.loc[
+            sample_id, 'reads-too-short-after-truncation'
+        ] += 1
+        return False
+
+    if (RecordStatus.AMBIGUOUS in (forward_status, reverse_status)):
+        filtering_stats_df.loc[
+            sample_id, 'reads-exceeding-maximum-ambiguous-bases'
+        ] += 1
+        return False
+
+    if (RecordStatus.TRUNCATED_AMBIGUOUS in (forward_status, reverse_status)):
+        filtering_stats_df.loc[sample_id, 'reads-truncated'] += 1
+        filtering_stats_df.loc[
+            sample_id, 'reads-exceeding-maximum-ambiguous-bases'
+        ] += 1
+        return False
+
+    if (RecordStatus.TRUNCATED in (forward_status, reverse_status)):
+        filtering_stats_df.loc[sample_id, 'reads-truncated'] += 1
+
+    filtering_stats_df.loc[sample_id, 'total-retained-reads'] += 1
+
+    return True
+
+
+def _align_records(
+    forward_record: FastqRecord, reverse_record: FastqRecord
+) -> tuple[FastqRecord, FastqRecord]:
+    '''
+    Align a forward record and reverse record to the same truncation length.
+    Note that if either (forward or reverse) truncation resulted in the record
+    falling below the minimum length fraction then this was already handled
+    upstream.
+
+    Parameters
+    ----------
+    forward_record : FastqRecord
+        The record from the forward fastq file.
+    reverse_record : FastqRecord
+        The record from the reverse fastq file.
+
+    Returns
+    -------
+    tuple[FastqRecord, FastqRecord]
+        The length-aligned forward and reverse records.
+    '''
+    if len(forward_record.sequence) < len(reverse_record.sequence):
+        reverse_record = _truncate(
+            reverse_record, len(forward_record.sequence)
+        )
+    elif len(reverse_record.sequence) < len(forward_record.sequence):
+        forward_record = _truncate(
+            forward_record, len(reverse_record.sequence)
+        )
+
+    return forward_record, reverse_record
+
+
 def _write_record(fastq_record: FastqRecord, fh: gzip.GzipFile) -> None:
     '''
     Writes a fastq record to an open fastq file.
@@ -189,6 +360,11 @@ def q_score(
     manifest_fh = manifest.open()
     manifest_fh.write('sample-id,filename,direction\n')
 
+    if isinstance(result, SingleLanePerSamplePairedEndFastqDirFmt):
+        paired = True
+    else:
+        paired = False
+
     # load the input demux manifest
     metadata_view = demux.metadata.view(YamlFormat).open()
     phred_offset = yaml.load(metadata_view,
@@ -210,78 +386,101 @@ def q_score(
     )
 
     for barcode_id, filename in enumerate(demux_manifest_df.index.values):
-        # determine read number
-        if 'R1' in str(filename):
-            read_number = 1
-        elif 'R2' in str(filename):
-            read_number = 2
-        else:
-            msg = (
-                'Unrecognized fastq file name. Netiher "R1" nor "R2" '
-                f'were found in the file {filename}.'
-            )
-            raise ValueError(msg)
+        if 'R2' in str(filename):
+            # we handle a read pair in the iteration for R1
+            continue
 
         # look up sample id
         sample_id = demux_manifest_df.loc[str(filename)]['sample-id']
 
         # create path for output fastq file
-        path = result.sequences.path_maker(
+        forward_path = result.sequences.path_maker(
             sample_id=sample_id,
             barcode_id=barcode_id,
             lane_number=1,
-            read_number=read_number
+            read_number=2
         )
-
-        output_fh = gzip.open(path, mode='wb')
-
-        filepath = Path(demux.path) / filename
-        for fastq_record in _read_fastq_records(str(filepath)):
-            filtering_stats_df.loc[sample_id, 'total-input-reads'] += 1
-
-            # search for low quality window
-            truncation_position = _find_low_quality_window(
-                fastq_record.quality_scores,
-                phred_offset,
-                min_quality,
-                quality_window + 1
+        if paired:
+            reverse_path = result.sequences.path_maker(
+                sample_id=sample_id,
+                barcode_id=barcode_id,
+                lane_number=1,
+                read_number=2
             )
 
-            # truncate fastq record if necessary and discard if it has been
-            # made too short
-            initial_record_length = len(fastq_record.sequence)
-            if truncation_position is not None:
-                fastq_record = _truncate(fastq_record, truncation_position)
-                filtering_stats_df.loc[sample_id, 'reads-truncated'] += 1
+        forward_fh = gzip.open(forward_path, mode='wb')
+        forward_input_fp = Path(demux.path) / filename
 
-                trunc_fraction = truncation_position / initial_record_length
-                if trunc_fraction <= min_length_fraction:
-                    filtering_stats_df.loc[
-                        sample_id, 'reads-too-short-after-truncation'
-                    ] += 1
-                    continue
+        if paired:
+            reverse_fh = gzip.open(reverse_path, mode='wb')
+            reverse_input_fp = Path(demux.path) / filename.replace('R1', 'R2')
 
-            # discard record if there are too many ambiguous bases
-            if fastq_record.sequence.count(b'N') > max_ambiguous:
-                filtering_stats_df.loc[
-                    sample_id, 'reads-exceeding-maximum-ambiguous-bases'
-                ] += 1
-                continue
-
-            # write record to output file
-            _write_record(fastq_record, output_fh)
-            filtering_stats_df.loc[sample_id, 'total-retained-reads'] += 1
-
-        # close output file and update manifest if records were retained,
-        # otherwise delete the empty file
-        output_fh.close()
-        if filtering_stats_df.loc[sample_id, 'total-retained-reads'] > 0:
-            if read_number == 1:
-                manifest_fh.write(f'{sample_id},{path.name},forward\n')
-            elif read_number == 2:
-                manifest_fh.write(f'{sample_id},{path.name},reverse\n')
+            forward_iterator = _read_fastq_records(str(forward_input_fp))
+            reverse_iterator = _read_fastq_records(str(reverse_input_fp))
+            iterator = zip(forward_iterator, reverse_iterator)
         else:
-            os.remove(path)
+            iterator = _read_fastq_records(str(forward_input_fp))
+
+        for fastq_record in iterator:
+            # process record(s)
+            if paired:
+                forward_record, reverse_record = fastq_record
+            else:
+                forward_record = fastq_record
+                reverse_record = None
+
+            forward_record, forward_status = _process_record(
+                fastq_record=forward_record,
+                phred_offset=phred_offset,
+                min_quality=min_quality,
+                window_length=quality_window + 1,
+                min_length_fraction=min_length_fraction,
+                max_ambiguous=max_ambiguous
+            )
+            reverse_record, reverse_status = _process_record(
+                fastq_record=reverse_record,
+                phred_offset=phred_offset,
+                min_quality=min_quality,
+                window_length=quality_window + 1,
+                min_length_fraction=min_length_fraction,
+                max_ambiguous=max_ambiguous
+            )
+
+            # see if record(s) is retained and update filtering stats
+            retained = _is_retained(
+                forward_status,
+                reverse_status,
+                filtering_stats_df,
+                sample_id
+            )
+
+            # if retained, align truncations and write to output files
+            if retained:
+                if paired:
+                    forward_record, reverse_record = _align_records(
+                        forward_record, reverse_record
+                    )
+                    _write_record(forward_record, forward_fh)
+                    _write_record(reverse_record, reverse_fh)
+                else:
+                    _write_record(forward_record, forward_fh)
+
+        # close output file(s) and update manifest if record(s) is retained,
+        # otherwise delete the empty file(s)
+        forward_fh.close()
+        if paired:
+            reverse_fh.close()
+
+        if filtering_stats_df.loc[sample_id, 'total-retained-reads'] > 0:
+            manifest_fh.write(f'{sample_id},{forward_path.name},forward\n')
+            if paired:
+                manifest_fh.write(
+                    f'{sample_id},{reverse_path.name},reverse\n'
+                )
+        else:
+            os.remove(forward_path)
+            if paired:
+                os.remove(reverse_path)
 
     # error if all samples retained no reads
     if filtering_stats_df['total-retained-reads'].sum() == 0:
