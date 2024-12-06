@@ -38,8 +38,8 @@ from q2_quality_filter._filter import (
 from q2_quality_filter._format import QualityFilterStatsFmt
 
 
-class FilterTests(TestPluginBase):
-    package = 'q2_quality_filter.test'
+class HelperMethodTests(TestPluginBase):
+    package = 'q2_quality_filter.tests'
 
     def test_read_fastq_records(self):
         exp = [
@@ -402,6 +402,10 @@ class FilterTests(TestPluginBase):
                 exp = b'@header\nATTCTGTA\n+\nMMLMLL++\n' * 3
                 self.assertEqual(contents, exp)
 
+
+class QScoreSingleEndTests(TestPluginBase):
+    package = 'q2_quality_filter.tests'
+
     def test_q_score_all_dropped(self):
         ar = Artifact.load(self.get_data_path('simple.qza'))
 
@@ -654,8 +658,12 @@ class FilterTests(TestPluginBase):
         pdt.assert_frame_equal(stats, exp_stats.loc[stats.index])
 
 
+class QScorePairedEndTests(TestPluginBase):
+    package = 'q2_quality_filter.tests'
+
+
 class TransformerTests(TestPluginBase):
-    package = 'q2_quality_filter.test'
+    package = 'q2_quality_filter.tests'
 
     def test_stats_to_metadata(self):
         filepath = self.get_data_path('stats-1.txt')
@@ -679,7 +687,7 @@ class TransformerTests(TestPluginBase):
 
 
 class TestUsageExamples(TestPluginBase):
-    package = 'q2_quality_filter.test'
+    package = 'q2_quality_filter.tests'
 
     def test_examples(self):
         self.execute_examples()
