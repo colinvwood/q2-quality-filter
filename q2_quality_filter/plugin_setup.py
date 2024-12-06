@@ -43,9 +43,10 @@ plugin.register_semantic_type_to_format(
     artifact_format=QualityFilterStatsDirFmt)
 
 InputMap, OutputMap = qiime2.plugin.TypeMap({
-    SampleData[SequencesWithQuality | PairedEndSequencesWithQuality]:
+    SampleData[SequencesWithQuality]:
         SampleData[SequencesWithQuality],
-
+    SampleData[PairedEndSequencesWithQuality]:
+        SampleData[PairedEndSequencesWithQuality],
     SampleData[JoinedSequencesWithQuality]:
         SampleData[JoinedSequencesWithQuality],
 })
