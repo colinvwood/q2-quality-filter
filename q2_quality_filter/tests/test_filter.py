@@ -6,6 +6,9 @@
 # The full license is in the file LICENSE, distributed with this software.
 # ----------------------------------------------------------------------------
 
+import pandas as pd
+import pandas.testing as pdt
+
 from copy import copy
 import gzip
 import os
@@ -13,15 +16,16 @@ from pathlib import Path
 import tempfile
 import unittest
 
-import pandas as pd
-import pandas.testing as pdt
 import qiime2
 from qiime2.sdk import Artifact
 from qiime2.plugin.testing import TestPluginBase
 from qiime2.util import redirected_stdio
+from q2_types.sample_data import SampleData
 from q2_types.per_sample_sequences import (
     FastqGzFormat,
     SingleLanePerSampleSingleEndFastqDirFmt,
+    SingleLanePerSamplePairedEndFastqDirFmt,
+    PairedEndSequencesWithQuality,
 )
 
 from q2_quality_filter._filter import (
@@ -660,6 +664,57 @@ class QScoreSingleEndTests(TestPluginBase):
 
 class QScorePairedEndTests(TestPluginBase):
     package = 'q2_quality_filter.tests'
+
+    def _get_header_diff(
+        self, forward_record: FastqRecord, reverse_record: FastqRecord
+    ) -> int:
+        zipped_headers = zip(
+            forward_record.sequence_header, reverse_record.sequence_header
+        )
+
+        diff = 0
+        for forward_byte, reverse_byte in zipped_headers:
+            if forward_byte != reverse_byte:
+                diff += 1
+
+        return diff
+
+    def _assert_records_match(self, manifest_df: pd.DataFrame):
+        for forward_fp, reverse_fp in zip(
+            manifest_df['forward'], manifest_df['reverse']
+        ):
+            forward_iterator = _read_fastq_records(forward_fp)
+            reverse_iterator = _read_fastq_records(reverse_fp)
+            iterator = zip(forward_iterator, reverse_iterator)
+
+            for forward_record, reverse_record in iterator:
+                # headers differ in one position to indicate read direction
+                self.assertEqual(
+                    self._get_header_diff(forward_record, reverse_record), 1
+                )
+                self.assertEqual(
+                    len(forward_record.sequence), len(reverse_record.sequence)
+                )
+
+    def test_paired_end_sequences(self):
+        demux_artifact = Artifact.import_data(
+            SampleData[PairedEndSequencesWithQuality],
+            self.get_data_path('paired-end-data'),
+        )
+
+        output_seqs, stats = self.plugin.methods['q_score'](
+            demux_artifact,
+            min_quality=10,
+            quality_window=5,
+            min_length_fraction=0.8,
+            max_ambiguous=2
+        )
+        output_demux_format = output_seqs.view(
+            SingleLanePerSamplePairedEndFastqDirFmt
+        )
+        demux_manifest_df = output_demux_format.manifest.view(pd.DataFrame)
+
+        self._assert_records_match(demux_manifest_df)
 
 
 class TransformerTests(TestPluginBase):

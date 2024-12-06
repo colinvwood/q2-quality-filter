@@ -11,7 +11,6 @@ from enum import Enum
 import gzip
 import os
 from typing import Union
-from pathlib import Path
 
 import yaml
 import pandas as pd
@@ -67,6 +66,8 @@ def _read_fastq_records(filepath: str):
             quality_header.strip(),
             quality_scores.strip()
         )
+
+    fh.close()
 
 
 def _find_low_quality_window(
@@ -337,8 +338,8 @@ def _write_record(fastq_record: FastqRecord, fh: gzip.GzipFile) -> None:
 
 def q_score(
     demux: Union[
-        SingleLanePerSampleSingleEndFastqDirFmt,
-        SingleLanePerSamplePairedEndFastqDirFmt
+        SingleLanePerSamplePairedEndFastqDirFmt,
+        SingleLanePerSampleSingleEndFastqDirFmt
     ],
     min_quality: int = 4,
     quality_window: int = 3,
@@ -365,19 +366,17 @@ def q_score(
     else:
         paired = False
 
-    # load the input demux manifest
+    # parse phred offset and load the input demux manifest
     metadata_view = demux.metadata.view(YamlFormat).open()
-    phred_offset = yaml.load(metadata_view,
-                             Loader=yaml.SafeLoader)['phred-offset']
-    demux_manifest = demux.manifest.view(demux.manifest.format)
-    demux_manifest_df = pd.read_csv(
-        demux_manifest.open(), dtype=str, comment='#'
-    )
-    demux_manifest_df.set_index('filename', inplace=True)
+    phred_offset = yaml.load(
+        metadata_view, Loader=yaml.SafeLoader
+    )['phred-offset']
+    demux_manifest_df = demux.manifest.view(pd.DataFrame)
 
+    # initialize filtering stats tracking dataframe
     filtering_stats_df = pd.DataFrame(
         data=0,
-        index=demux_manifest_df['sample-id'],
+        index=demux_manifest_df.index,
         columns=[
             'total-input-reads',
             'total-retained-reads',
@@ -387,20 +386,18 @@ def q_score(
         ]
     )
 
-    for barcode_id, filename in enumerate(demux_manifest_df.index.values):
-        if 'R2' in str(filename):
-            # we handle a read pair in the iteration for R1
-            continue
+    for barcode_id, sample_id in enumerate(demux_manifest_df.index.values):
+        # get filepath(s) of input fastq file(s)
+        forward_input_fp = demux_manifest_df.loc[sample_id, 'forward']
+        if paired:
+            reverse_input_fp = demux_manifest_df.loc[sample_id, 'reverse']
 
-        # look up sample id
-        sample_id = demux_manifest_df.loc[str(filename)]['sample-id']
-
-        # create path(s) for output fastq file
+        # create path(s) for output fastq file(s)
         forward_path = result.sequences.path_maker(
             sample_id=sample_id,
             barcode_id=barcode_id,
             lane_number=1,
-            read_number=2
+            read_number=1
         )
         if paired:
             reverse_path = result.sequences.path_maker(
@@ -410,12 +407,11 @@ def q_score(
                 read_number=2
             )
 
+        # open output filehandle(s) and create fastq record iterator
         forward_fh = gzip.open(forward_path, mode='wb')
-        forward_input_fp = Path(demux.path) / filename
 
         if paired:
             reverse_fh = gzip.open(reverse_path, mode='wb')
-            reverse_input_fp = Path(demux.path) / filename.replace('R1', 'R2')
 
             forward_iterator = _read_fastq_records(str(forward_input_fp))
             reverse_iterator = _read_fastq_records(str(reverse_input_fp))
