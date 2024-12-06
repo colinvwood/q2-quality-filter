@@ -349,7 +349,7 @@ def q_score(
     Parameter defaults as used in Bokulich et al, Nature Methods 2013, same as
     QIIME 1.9.1.
     '''
-    # we need to use a union type of single-end and paired-end formats
+    # we need to use a union type of single-end or paired-end formats
     # which will be transformed by the framework to the appropriate return type
     union_format = _ReadDirectionUnion()
     union_format.format = type(demux)()
@@ -393,7 +393,7 @@ def q_score(
         # look up sample id
         sample_id = demux_manifest_df.loc[str(filename)]['sample-id']
 
-        # create path for output fastq file
+        # create path(s) for output fastq file
         forward_path = result.sequences.path_maker(
             sample_id=sample_id,
             barcode_id=barcode_id,
@@ -422,13 +422,13 @@ def q_score(
             iterator = _read_fastq_records(str(forward_input_fp))
 
         for fastq_record in iterator:
-            # process record(s)
             if paired:
                 forward_record, reverse_record = fastq_record
             else:
                 forward_record = fastq_record
                 reverse_record = None
 
+            # process records
             forward_record, forward_status = _process_record(
                 fastq_record=forward_record,
                 phred_offset=phred_offset,
@@ -446,7 +446,7 @@ def q_score(
                 max_ambiguous=max_ambiguous
             )
 
-            # see if record(s) is retained and update filtering stats
+            # see if record(s) retained and update filtering stats
             retained = _is_retained(
                 forward_status,
                 reverse_status,
@@ -454,9 +454,10 @@ def q_score(
                 sample_id
             )
 
-            # if retained, align truncations and write to output files
+            # if retained write to output file(s)
             if retained:
                 if paired:
+                    # align truncations if paired
                     forward_record, reverse_record = _align_records(
                         forward_record, reverse_record
                     )
@@ -465,7 +466,7 @@ def q_score(
                 else:
                     _write_record(forward_record, forward_fh)
 
-        # close output file(s) and update manifest if record(s) is retained,
+        # close output file(s) and update manifest if record(s) retained,
         # otherwise delete the empty file(s)
         forward_fh.close()
         if paired:

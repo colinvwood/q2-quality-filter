@@ -29,6 +29,9 @@ from q2_quality_filter._filter import (
     _read_fastq_records,
     _find_low_quality_window,
     _truncate,
+    RecordStatus,
+    _process_record,
+    _align_records,
     _write_record,
 )
 from q2_quality_filter._format import QualityFilterStatsFmt
@@ -141,6 +144,142 @@ class FilterTests(TestPluginBase):
             b'@header', b'', b'+', b''
         )
         self.assertEqual(truncated, exp)
+
+    def test_process_record(self):
+        # truncation
+        fastq_record = FastqRecord(
+            b'@header', b'ATTCTGTA', b'+', b'MMLMLL++'
+        )
+        processed_record, status = _process_record(
+            copy(fastq_record),
+            phred_offset=33,
+            min_quality=15,
+            window_length=2,
+            min_length_fraction=0.5,
+            max_ambiguous=0
+        )
+        exp_record = FastqRecord(
+            b'@header', b'ATTCTG', b'+', b'MMLMLL'
+        )
+        exp_status = RecordStatus.TRUNCATED
+        self.assertEqual(processed_record, exp_record)
+        self.assertEqual(status, exp_status)
+
+        # no truncation
+        processed_record, status = _process_record(
+            copy(fastq_record),
+            phred_offset=33,
+            min_quality=5,
+            window_length=2,
+            min_length_fraction=0.5,
+            max_ambiguous=0
+        )
+        exp_record = fastq_record
+        exp_status = RecordStatus.UNTRUNCATED
+        self.assertEqual(processed_record, exp_record)
+        self.assertEqual(status, exp_status)
+
+        # ambiguous
+        fastq_record = FastqRecord(
+            b'@header', b'ATTCTNTN', b'+', b'MMLMLL++'
+        )
+        processed_record, status = _process_record(
+            copy(fastq_record),
+            phred_offset=33,
+            min_quality=5,
+            window_length=2,
+            min_length_fraction=0.5,
+            max_ambiguous=1
+        )
+        exp_record = FastqRecord(
+            b'@header', b'ATTCTNTN', b'+', b'MMLMLL++'
+        )
+        exp_status = RecordStatus.AMBIGUOUS
+        self.assertEqual(processed_record, exp_record)
+        self.assertEqual(status, exp_status)
+
+        # truncation and ambiguous
+        fastq_record = FastqRecord(
+            b'@header', b'ATTCTNTA', b'+', b'MMLMLL++'
+        )
+        processed_record, status = _process_record(
+            copy(fastq_record),
+            phred_offset=33,
+            min_quality=15,
+            window_length=2,
+            min_length_fraction=0.5,
+            max_ambiguous=0
+        )
+        exp_record = FastqRecord(
+            b'@header', b'ATTCTN', b'+', b'MMLMLL'
+        )
+        exp_status = RecordStatus.TRUNCATED_AMBIGUOUS
+        self.assertEqual(processed_record, exp_record)
+        self.assertEqual(status, exp_status)
+
+        # truncation and too short
+        fastq_record = FastqRecord(
+            b'@header', b'ATTCTGTA', b'+', b'MMLMLL++'
+        )
+        processed_record, status = _process_record(
+            copy(fastq_record),
+            phred_offset=33,
+            min_quality=15,
+            window_length=2,
+            min_length_fraction=0.9,
+            max_ambiguous=0
+        )
+        exp_record = FastqRecord(
+            b'@header', b'ATTCTG', b'+', b'MMLMLL'
+        )
+        exp_status = RecordStatus.SHORT
+        self.assertEqual(processed_record, exp_record)
+        self.assertEqual(status, exp_status)
+
+    def test_align_records(self):
+        # records unchanged if equal lengths
+        forward_record = FastqRecord(
+            b'@header', b'ATTCTGTA', b'+', b'MMLMLL++'
+        )
+        reverse_record = FastqRecord(
+            b'@header', b'TTAGCATC', b'+', b'+MM+MLM+'
+        )
+        obs_forward_record, obs_reverse_record = _align_records(
+            forward_record, reverse_record
+        )
+        self.assertEqual(obs_forward_record, forward_record)
+        self.assertEqual(obs_reverse_record, reverse_record)
+
+        # longer record truncated to shorter record
+        forward_record = FastqRecord(
+            b'@header', b'ATTCTGTA', b'+', b'MMLMLL++'
+        )
+        reverse_record = FastqRecord(
+            b'@header', b'TTAGCA', b'+', b'+MM+ML'
+        )
+        obs_forward_record, obs_reverse_record = _align_records(
+            forward_record, reverse_record
+        )
+        exp_forward_record = FastqRecord(
+            b'@header', b'ATTCTG', b'+', b'MMLMLL'
+        )
+        self.assertEqual(obs_forward_record, exp_forward_record)
+        self.assertEqual(obs_reverse_record, reverse_record)
+
+        forward_record = FastqRecord(
+            b'@header', b'ATTC', b'+', b'MMLM'
+        )
+        reverse_record = FastqRecord(
+            b'@header', b'TTAGCATC', b'+', b'+MM+MLM+'
+        )
+        obs_forward_record, obs_reverse_record = _align_records(
+            forward_record, reverse_record
+        )
+        exp_reverse_record = FastqRecord(
+            b'@header', b'TTAG', b'+', b'+MM+'
+        )
+        self.assertEqual(obs_forward_record, forward_record)
+        self.assertEqual(obs_reverse_record, exp_reverse_record)
 
     def test_write_record(self):
         fastq_record = FastqRecord(
