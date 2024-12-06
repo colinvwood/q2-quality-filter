@@ -379,7 +379,9 @@ def q_score(
         data=0,
         index=demux_manifest_df['sample-id'],
         columns=[
-            'total-input-reads', 'total-retained-reads', 'reads-truncated',
+            'total-input-reads',
+            'total-retained-reads',
+            'reads-truncated',
             'reads-too-short-after-truncation',
             'reads-exceeding-maximum-ambiguous-bases'
         ]

@@ -31,6 +31,7 @@ from q2_quality_filter._filter import (
     _truncate,
     RecordStatus,
     _process_record,
+    _is_retained,
     _align_records,
     _write_record,
 )
@@ -235,6 +236,101 @@ class FilterTests(TestPluginBase):
         exp_status = RecordStatus.SHORT
         self.assertEqual(processed_record, exp_record)
         self.assertEqual(status, exp_status)
+
+    def test_is_retained(self):
+        filtering_stats_df = pd.DataFrame(
+            data=0,
+            index=['sample-a', 'sample-b', 'sample-c'],
+            columns=[
+                'total-input-reads',
+                'total-retained-reads',
+                'reads-truncated',
+                'reads-too-short-after-truncation',
+                'reads-exceeding-maximum-ambiguous-bases'
+            ]
+        )
+
+        # retained and truncated
+        retained = _is_retained(
+            forward_status=RecordStatus.TRUNCATED,
+            reverse_status=RecordStatus.UNTRUNCATED,
+            filtering_stats_df=filtering_stats_df,
+            sample_id='sample-a'
+        )
+        self.assertTrue(retained)
+        self.assertEqual(
+            filtering_stats_df.loc['sample-a', 'total-retained-reads'], 1
+        )
+        self.assertEqual(
+            filtering_stats_df.loc['sample-a', 'reads-truncated'], 1
+        )
+        filtering_stats_df.iloc[:, :] = 0
+
+        # forward read only, retained
+        retained = _is_retained(
+            forward_status=RecordStatus.TRUNCATED,
+            reverse_status=None,
+            filtering_stats_df=filtering_stats_df,
+            sample_id='sample-a'
+        )
+        self.assertTrue(retained)
+        self.assertEqual(
+            filtering_stats_df.loc['sample-a', 'total-retained-reads'], 1
+        )
+        self.assertEqual(
+            filtering_stats_df.loc['sample-a', 'reads-truncated'], 1
+        )
+        self.assertEqual(
+            filtering_stats_df.loc[
+                'sample-a', 'reads-too-short-after-truncation'
+            ],
+            0
+        )
+        filtering_stats_df.iloc[:, :] = 0
+
+        # forward read only, short
+        retained = _is_retained(
+            forward_status=RecordStatus.SHORT,
+            reverse_status=None,
+            filtering_stats_df=filtering_stats_df,
+            sample_id='sample-a'
+        )
+        self.assertFalse(retained)
+        self.assertEqual(
+            filtering_stats_df.loc['sample-a', 'total-retained-reads'], 0
+        )
+        self.assertEqual(
+            filtering_stats_df.loc['sample-a', 'reads-truncated'], 1
+        )
+        self.assertEqual(
+            filtering_stats_df.loc[
+                'sample-a', 'reads-too-short-after-truncation'
+            ],
+            1
+        )
+        filtering_stats_df.iloc[:, :] = 0
+
+        # one read untruncated, one read truncated and ambiguous
+        retained = _is_retained(
+            forward_status=RecordStatus.UNTRUNCATED,
+            reverse_status=RecordStatus.TRUNCATED_AMBIGUOUS,
+            filtering_stats_df=filtering_stats_df,
+            sample_id='sample-a'
+        )
+        self.assertFalse(retained)
+        self.assertEqual(
+            filtering_stats_df.loc['sample-a', 'total-retained-reads'], 0
+        )
+        self.assertEqual(
+            filtering_stats_df.loc[
+                'sample-a', 'reads-exceeding-maximum-ambiguous-bases'
+            ],
+            1
+        )
+        self.assertEqual(
+            filtering_stats_df.loc['sample-a', 'reads-truncated'], 1
+        )
+        filtering_stats_df.iloc[:, :] = 0
 
     def test_align_records(self):
         # records unchanged if equal lengths
