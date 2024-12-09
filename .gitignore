@@ -66,6 +66,7 @@ target/
 
 # qiime
 *.qza
+!q2_quality_filter/tests/data/*.qza
 *.qzv
 
 .DS_Store
