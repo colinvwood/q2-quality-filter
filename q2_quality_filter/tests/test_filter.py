@@ -704,8 +704,8 @@ class QScorePairedEndTests(TestPluginBase):
 
         output_seqs, stats = self.plugin.methods['q_score'](
             demux_artifact,
-            min_quality=10,
-            quality_window=5,
+            min_quality=15,
+            quality_window=2,
             min_length_fraction=0.8,
             max_ambiguous=2
         )
@@ -714,7 +714,54 @@ class QScorePairedEndTests(TestPluginBase):
         )
         demux_manifest_df = output_demux_format.manifest.view(pd.DataFrame)
 
+        # corresponding records should be same length and have matching headers
         self._assert_records_match(demux_manifest_df)
+
+        # "Human-Kneecap2_S2" is dropped because the R2 reads have low q scores
+        exp_sample_ids = ['Human-Kneecap', 'Human-Kneecap3']
+        self.assertEqual(
+            set(demux_manifest_df.index), set(exp_sample_ids)
+        )
+        self.assertEqual(len(demux_manifest_df), 2)
+
+        # assert truncation positions are correct
+        sample1_forward_exp = [
+            # first record dropped because of R2 scores
+            b'@M00899:113:000000000-A5K20:1:1101:25454:3578 1:N:0:2',
+            b'CCTACGGGAGGCAGCAGTGAGGAATATTGGTCAATGGGCGAGAGCCTGAACCAGCCAAGTA',
+            b'+',
+            b'8ACCCGD@AA=18=======;CEFGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGF',
+            b'@M00899:113:000000000-A5K20:1:1101:25177:3605 1:N:0:2',
+            b'CCTACGGGAGGCAGCAGTGAGGAATATTGGTCAATGGACGGAAGTCTGAACCAGCCAAGTAGCGTGCAGGATGAC', # noqa
+            b'+',
+            b'88BCCEDAD9018======;;CCFGGGGFGGGFGGGGGGGGGGGGGGGGGGGGGGGFGGGGGGGGGGGGGGGGGG', # noqa
+        ]
+
+        with gzip.open(
+            demux_manifest_df.loc['Human-Kneecap', 'forward']
+        ) as fh:
+            sample1_forward_obs = [line.strip() for line in fh.readlines()]
+
+        self.assertEqual(sample1_forward_exp, sample1_forward_obs)
+
+        sample1_reverse_exp = [
+            # first record dropped because of R2 scores
+            b'@M00899:113:000000000-A5K20:1:1101:25454:3578 2:N:0:2',
+            b'GACTACCGGGGTATCTAATCCTGTTCGATACCCGCACCTTCGAGCTTCAGCGTCAGTTGCG',
+            b'+',
+            b'CCCCCGGGGGGGGGGGGGGGGGGGGGGGGGGFGGGGGGGGGGGGGGGGGGGGGGGGGGGGG',
+            b'@M00899:113:000000000-A5K20:1:1101:25177:3605 2:N:0:2',
+            b'GACTACTGGGGTATCTAATCCTGTTTGATACCCGCACCTTCGAGCTTAAGCGTCAGTTGCGCTCCCGTCAGCTGC', # noqa
+            b'+',
+            b'CCCCCGG9FFGGGGGGGGGGGGGGGGGGGGGGGFGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGG', # noqa
+        ]
+
+        with gzip.open(
+            demux_manifest_df.loc['Human-Kneecap', 'reverse']
+        ) as fh:
+            sample1_reverse_obs = [line.strip() for line in fh.readlines()]
+
+        self.assertEqual(sample1_reverse_exp, sample1_reverse_obs)
 
 
 class TransformerTests(TestPluginBase):

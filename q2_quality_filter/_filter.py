@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from enum import Enum
 import gzip
 import os
+from pathlib import Path
 from typing import Union
 
 import yaml
@@ -387,31 +388,18 @@ def q_score(
     )
 
     for barcode_id, sample_id in enumerate(demux_manifest_df.index.values):
-        # get filepath(s) of input fastq file(s)
+        # get/create filepath(s) of input/output fastq file(s)
         forward_input_fp = demux_manifest_df.loc[sample_id, 'forward']
+        forward_output_fp = Path(result.path) / Path(forward_input_fp).name
         if paired:
             reverse_input_fp = demux_manifest_df.loc[sample_id, 'reverse']
-
-        # create path(s) for output fastq file(s)
-        forward_path = result.sequences.path_maker(
-            sample_id=sample_id,
-            barcode_id=barcode_id,
-            lane_number=1,
-            read_number=1
-        )
-        if paired:
-            reverse_path = result.sequences.path_maker(
-                sample_id=sample_id,
-                barcode_id=barcode_id,
-                lane_number=1,
-                read_number=2
-            )
+            reverse_output_fp = Path(result.path) / Path(reverse_input_fp).name
 
         # open output filehandle(s) and create fastq record iterator
-        forward_fh = gzip.open(forward_path, mode='wb')
+        forward_fh = gzip.open(forward_output_fp, mode='wb')
 
         if paired:
-            reverse_fh = gzip.open(reverse_path, mode='wb')
+            reverse_fh = gzip.open(reverse_output_fp, mode='wb')
 
             forward_iterator = _read_fastq_records(str(forward_input_fp))
             reverse_iterator = _read_fastq_records(str(reverse_input_fp))
@@ -471,15 +459,17 @@ def q_score(
             reverse_fh.close()
 
         if filtering_stats_df.loc[sample_id, 'total-retained-reads'] > 0:
-            manifest_fh.write(f'{sample_id},{forward_path.name},forward\n')
+            manifest_fh.write(
+                f'{sample_id},{forward_output_fp.name},forward\n'
+            )
             if paired:
                 manifest_fh.write(
-                    f'{sample_id},{reverse_path.name},reverse\n'
+                    f'{sample_id},{reverse_output_fp.name},reverse\n'
                 )
         else:
-            os.remove(forward_path)
+            os.remove(forward_output_fp)
             if paired:
-                os.remove(reverse_path)
+                os.remove(reverse_output_fp)
 
     # error if all samples retained no reads
     if filtering_stats_df['total-retained-reads'].sum() == 0:
