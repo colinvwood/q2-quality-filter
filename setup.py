@@ -25,7 +25,7 @@ setup(
     },
     package_data={
         "q2_quality_filter": ["citations.bib"],
-        "q2_quality_filter.tests": ["data/*"],
+        "q2_quality_filter.tests": ["data/**/*"],
     },
     zip_safe=False,
 )
