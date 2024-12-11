@@ -36,7 +36,6 @@ from q2_quality_filter._filter import (
     RecordStatus,
     _process_record,
     _is_retained,
-    _align_records,
     _write_record,
 )
 from q2_quality_filter._format import QualityFilterStatsFmt
@@ -335,51 +334,6 @@ class HelperMethodTests(TestPluginBase):
             filtering_stats_df.loc['sample-a', 'reads-truncated'], 1
         )
         filtering_stats_df.iloc[:, :] = 0
-
-    def test_align_records(self):
-        # records unchanged if equal lengths
-        forward_record = FastqRecord(
-            b'@header', b'ATTCTGTA', b'+', b'MMLMLL++'
-        )
-        reverse_record = FastqRecord(
-            b'@header', b'TTAGCATC', b'+', b'+MM+MLM+'
-        )
-        obs_forward_record, obs_reverse_record = _align_records(
-            forward_record, reverse_record
-        )
-        self.assertEqual(obs_forward_record, forward_record)
-        self.assertEqual(obs_reverse_record, reverse_record)
-
-        # longer record truncated to shorter record
-        forward_record = FastqRecord(
-            b'@header', b'ATTCTGTA', b'+', b'MMLMLL++'
-        )
-        reverse_record = FastqRecord(
-            b'@header', b'TTAGCA', b'+', b'+MM+ML'
-        )
-        obs_forward_record, obs_reverse_record = _align_records(
-            forward_record, reverse_record
-        )
-        exp_forward_record = FastqRecord(
-            b'@header', b'ATTCTG', b'+', b'MMLMLL'
-        )
-        self.assertEqual(obs_forward_record, exp_forward_record)
-        self.assertEqual(obs_reverse_record, reverse_record)
-
-        forward_record = FastqRecord(
-            b'@header', b'ATTC', b'+', b'MMLM'
-        )
-        reverse_record = FastqRecord(
-            b'@header', b'TTAGCATC', b'+', b'+MM+MLM+'
-        )
-        obs_forward_record, obs_reverse_record = _align_records(
-            forward_record, reverse_record
-        )
-        exp_reverse_record = FastqRecord(
-            b'@header', b'TTAG', b'+', b'+MM+'
-        )
-        self.assertEqual(obs_forward_record, forward_record)
-        self.assertEqual(obs_reverse_record, exp_reverse_record)
 
     def test_write_record(self):
         fastq_record = FastqRecord(
@@ -692,9 +646,6 @@ class QScorePairedEndTests(TestPluginBase):
                 self.assertEqual(
                     self._get_header_diff(forward_record, reverse_record), 1
                 )
-                self.assertEqual(
-                    len(forward_record.sequence), len(reverse_record.sequence)
-                )
 
     def test_paired_end_sequences(self):
         demux_artifact = Artifact.import_data(
@@ -714,10 +665,10 @@ class QScorePairedEndTests(TestPluginBase):
         )
         demux_manifest_df = output_demux_format.manifest.view(pd.DataFrame)
 
-        # corresponding records should be same length and have matching headers
+        # corresponding records should have matching headers
         self._assert_records_match(demux_manifest_df)
 
-        # "Human-Kneecap2_S2" is dropped because the R2 reads have low q scores
+        # "Human-Kneecap2_S2" is dropped because the R1 reads have low q scores
         exp_sample_ids = ['Human-Kneecap', 'Human-Kneecap3']
         self.assertEqual(
             set(demux_manifest_df.index), set(exp_sample_ids)
@@ -747,9 +698,9 @@ class QScorePairedEndTests(TestPluginBase):
         sample1_reverse_exp = [
             # first record dropped because of R2 scores
             b'@M00899:113:000000000-A5K20:1:1101:25454:3578 2:N:0:2',
-            b'GACTACCGGGGTATCTAATCCTGTTCGATACCCGCACCTTCGAGCTTCAGCGTCAGTTGCG',
+            b'GACTACCGGGGTATCTAATCCTGTTCGATACCCGCACCTTCGAGCTTCAGCGTCAGTTGCGCTCCCGTCAGCTGC', # noqa
             b'+',
-            b'CCCCCGGGGGGGGGGGGGGGGGGGGGGGGGGFGGGGGGGGGGGGGGGGGGGGGGGGGGGGG',
+            b'CCCCCGGGGGGGGGGGGGGGGGGGGGGGGGGFGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGG', # noqa
             b'@M00899:113:000000000-A5K20:1:1101:25177:3605 2:N:0:2',
             b'GACTACTGGGGTATCTAATCCTGTTTGATACCCGCACCTTCGAGCTTAAGCGTCAGTTGCGCTCCCGTCAGCTGC', # noqa
             b'+',

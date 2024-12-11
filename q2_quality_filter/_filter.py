@@ -283,39 +283,6 @@ def _is_retained(
     return True
 
 
-def _align_records(
-    forward_record: FastqRecord, reverse_record: FastqRecord
-) -> tuple[FastqRecord, FastqRecord]:
-    '''
-    Align a forward record and reverse record to the same truncation length.
-    Note that if either (forward or reverse) truncation resulted in the record
-    falling below the minimum length fraction then this was already handled
-    upstream.
-
-    Parameters
-    ----------
-    forward_record : FastqRecord
-        The record from the forward fastq file.
-    reverse_record : FastqRecord
-        The record from the reverse fastq file.
-
-    Returns
-    -------
-    tuple[FastqRecord, FastqRecord]
-        The length-aligned forward and reverse records.
-    '''
-    if len(forward_record.sequence) < len(reverse_record.sequence):
-        reverse_record = _truncate(
-            reverse_record, len(forward_record.sequence)
-        )
-    elif len(reverse_record.sequence) < len(forward_record.sequence):
-        forward_record = _truncate(
-            forward_record, len(reverse_record.sequence)
-        )
-
-    return forward_record, reverse_record
-
-
 def _write_record(fastq_record: FastqRecord, fh: gzip.GzipFile) -> None:
     '''
     Writes a fastq record to an open fastq file.
@@ -443,10 +410,6 @@ def q_score(
             # if retained write to output file(s)
             if retained:
                 if paired:
-                    # align truncations if paired
-                    forward_record, reverse_record = _align_records(
-                        forward_record, reverse_record
-                    )
                     _write_record(forward_record, forward_fh)
                     _write_record(reverse_record, reverse_fh)
                 else:
