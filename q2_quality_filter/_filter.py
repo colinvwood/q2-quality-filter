@@ -204,8 +204,8 @@ def _process_record(
     )
 
     # check if truncation should be performed mark short if necessary
-    initial_record_length = len(fastq_record.sequence)
     if truncation_position is not None:
+        initial_record_length = len(fastq_record.sequence)
         fastq_record = _truncate(fastq_record, truncation_position)
         status = RecordStatus.TRUNCATED
 
