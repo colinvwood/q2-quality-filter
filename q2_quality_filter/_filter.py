@@ -162,8 +162,8 @@ def _process_record(
     max_ambiguous: int,
 ) -> tuple[FastqRecord, RecordStatus]:
     '''
-    Processes a fastq record by detecting low quality windows, truncating if
-    one or more such windows are found, detecting if a truncated record is too
+    Processes a fastq record by detecting low quality windows, truncating
+    before the first such window if found, detecting if a truncated record is too
     short, and finally detecting if the number of ambiguous bases is too high.
 
     Parameters
