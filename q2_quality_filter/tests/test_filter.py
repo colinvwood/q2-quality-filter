@@ -119,6 +119,12 @@ self.assertEqual(obs, None)
             quality_scores, phred_offset=33, min_quality=20, window_length=3
         )
         self.assertEqual(obs, 4)
+        # test that when all windows are too short, None is returned
+        quality_scores = b'++ML+++M+++MM++'
+        obs = _find_low_quality_window(
+            quality_scores, phred_offset=33, min_quality=20, window_length=4
+        )
+        self.assertEqual(obs, None)
 
     def test_truncate(self):
         fastq_record = FastqRecord(
