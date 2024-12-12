@@ -107,6 +107,13 @@ self.assertEqual(obs, None)
         )
         self.assertEqual(obs, 7)
 
+        # low quality window is detected when it's longer than window length
+        quality_scores = b'MMMMMMM+++'
+        obs = _find_low_quality_window(
+            quality_scores, phred_offset=33, min_quality=11, window_length=2
+        )
+        self.assertEqual(obs, 7)
+
         # test when multiple windows exist, first window is returned
         quality_scores = b'ML++MMM+++'
         obs = _find_low_quality_window(
