@@ -80,7 +80,7 @@ class HelperMethodTests(TestPluginBase):
         obs = _find_low_quality_window(
             quality_scores, phred_offset=33, min_quality=44, window_length=2
         )
-
+self.assertEqual(obs, None)
         # test windows detected correctly
         # quality scores: M => 44; + => 10
         quality_scores = b'MMM++MM'
