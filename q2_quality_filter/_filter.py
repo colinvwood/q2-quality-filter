@@ -329,10 +329,7 @@ def q_score(
     manifest_fh = manifest.open()
     manifest_fh.write('sample-id,filename,direction\n')
 
-    if isinstance(result, SingleLanePerSamplePairedEndFastqDirFmt):
-        paired = True
-    else:
-        paired = False
+    paired = isinstance(result, SingleLanePerSamplePairedEndFastqDirFmt)
 
     # parse phred offset and load the input demux manifest
     metadata_view = demux.metadata.view(YamlFormat).open()
