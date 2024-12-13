@@ -68,8 +68,6 @@ def _read_fastq_records(filepath: str):
             quality_scores.strip()
         )
 
-    fh.close()
-
 
 def _find_low_quality_window(
     quality_scores: bytes,
@@ -163,8 +161,9 @@ def _process_record(
 ) -> tuple[FastqRecord, RecordStatus]:
     '''
     Processes a fastq record by detecting low quality windows, truncating
-    before the first such window if found, detecting if a truncated record is too
-    short, and finally detecting if the number of ambiguous bases is too high.
+    before the first such window if found, detecting if a truncated record is
+    too short, and finally detecting if the number of ambiguous bases is too
+    high.
 
     Parameters
     ----------

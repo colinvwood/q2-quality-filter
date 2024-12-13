@@ -80,7 +80,8 @@ class HelperMethodTests(TestPluginBase):
         obs = _find_low_quality_window(
             quality_scores, phred_offset=33, min_quality=44, window_length=2
         )
-self.assertEqual(obs, None)
+        self.assertEqual(obs, None)
+
         # test windows detected correctly
         # quality scores: M => 44; + => 10
         quality_scores = b'MMM++MM'
@@ -309,18 +310,18 @@ self.assertEqual(obs, None)
             forward_status=RecordStatus.SHORT,
             reverse_status=None,
             filtering_stats_df=filtering_stats_df,
-            sample_id='sample-a'
+            sample_id='sample-b'
         )
         self.assertFalse(retained)
         self.assertEqual(
-            filtering_stats_df.loc['sample-a', 'total-retained-reads'], 0
+            filtering_stats_df.loc['sample-b', 'total-retained-reads'], 0
         )
         self.assertEqual(
-            filtering_stats_df.loc['sample-a', 'reads-truncated'], 1
+            filtering_stats_df.loc['sample-b', 'reads-truncated'], 1
         )
         self.assertEqual(
             filtering_stats_df.loc[
-                'sample-a', 'reads-too-short-after-truncation'
+                'sample-b', 'reads-too-short-after-truncation'
             ],
             1
         )
