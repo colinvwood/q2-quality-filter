@@ -11,20 +11,18 @@ from enum import Enum
 import gzip
 import os
 from pathlib import Path
-from typing import Union
 
 import yaml
 import pandas as pd
 import numpy as np
 
 from q2_types.per_sample_sequences import (
-    SingleLanePerSampleSingleEndFastqDirFmt,
     SingleLanePerSamplePairedEndFastqDirFmt,
     FastqManifestFormat,
     YamlFormat,
 )
 
-from q2_quality_filter._format import _ReadDirectionUnion
+from q2_quality_filter._format import _ReadDirectionUnion, _ReadDirectionTypes
 
 
 @dataclass
@@ -304,10 +302,7 @@ def _write_record(fastq_record: FastqRecord, fh: gzip.GzipFile) -> None:
 
 
 def q_score(
-    demux: Union[
-        SingleLanePerSamplePairedEndFastqDirFmt,
-        SingleLanePerSampleSingleEndFastqDirFmt
-    ],
+    demux: _ReadDirectionTypes,
     min_quality: int = 4,
     quality_window: int = 3,
     min_length_fraction: float = 0.75,
