@@ -1,0 +1,9 @@
+# Produced by Super Duper Sequencing Machine
+
+sample-id,filename,direction
+Human-Kneecap,Human-Kneecap_S1_L001_R1_001.fastq.gz,forward
+Human-Kneecap,Human-Kneecap_S1_L001_R2_001.fastq.gz,reverse
+Human-Kneecap2,Human-Kneecap2_S2_L001_R1_001.fastq.gz,forward
+Human-Kneecap2,Human-Kneecap2_S2_L001_R2_001.fastq.gz,reverse
+Human-Kneecap3,Human-Kneecap3_S3_L001_R1_001.fastq.gz,forward
+Human-Kneecap3,Human-Kneecap3_S3_L001_R2_001.fastq.gz,reverse

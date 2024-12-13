@@ -43,9 +43,10 @@ plugin.register_semantic_type_to_format(
     artifact_format=QualityFilterStatsDirFmt)
 
 InputMap, OutputMap = qiime2.plugin.TypeMap({
-    SampleData[SequencesWithQuality | PairedEndSequencesWithQuality]:
+    SampleData[SequencesWithQuality]:
         SampleData[SequencesWithQuality],
-
+    SampleData[PairedEndSequencesWithQuality]:
+        SampleData[PairedEndSequencesWithQuality],
     SampleData[JoinedSequencesWithQuality]:
         SampleData[JoinedSequencesWithQuality],
 })
@@ -62,19 +63,24 @@ _q_score_input_descriptions = {
 }
 
 _q_score_parameter_descriptions = {
-    'min_quality': 'The minimum acceptable PHRED score. All PHRED scores '
-                   'less that this value are considered to be low PHRED '
-                   'scores.',
-    'quality_window': 'The maximum number of low PHRED scores that '
-                      'can be observed in direct succession before '
-                      'truncating a sequence read.',
-    'min_length_fraction': 'The minimum length that a sequence read can '
-                           'be following truncation and still be '
-                           'retained. This length should be provided '
-                           'as a fraction of the input sequence length.',
-    'max_ambiguous': 'The maximum number of ambiguous (i.e., N) base '
-                     'calls. This is applied after trimming sequences '
-                     'based on `min_length_fraction`.'
+    'min_quality': (
+        'The minimum acceptable PHRED score. All PHRED scores less that this '
+        'value are considered to be low PHRED scores.'
+    ),
+    'quality_window': (
+        'The maximum number of low PHRED scores that can be observed in '
+        'direct succession before truncating a sequence read. Note that '
+        'truncation is performed such that the entirety of the low quality '
+        'window is truncated.'
+    ),
+    'min_length_fraction': (
+        'Filter truncated reads whose length fraction (truncated length '
+        'divided by original length) is less than or equal to this value.'
+    ),
+    'max_ambiguous': (
+        'The maximum number of ambiguous (i.e., N) base calls. This is '
+        'applied after trimming sequences based on `min_length_fraction`.'
+    )
 }
 
 _q_score_output_descriptions = {
